@@ -45,6 +45,20 @@ def create_index(args: argparse.Namespace) -> KVStore:
         else:
             raise ValueError("Invalid key")
         index = GRIT(index_name, raw_instruction)
+    elif args.index_type == "minilm":
+        from eval.retrieval.minilm import MiniLM
+        index = MiniLM(index_name)
+    elif args.index_type == "qwen3":  # <<< NEW
+        from eval.retrieval.qwen import Qwen3Embedding
+        if args.key == "title_abstract":
+            query_instruction = "Retrieve relevant research paper titles and abstracts for this query."
+        elif args.key == "full_paper":
+            query_instruction = "Retrieve relevant full research papers for this query."
+        elif args.key == "paragraphs":
+            query_instruction = "Retrieve relevant passages from research papers for this query."
+        else:
+            raise ValueError("Invalid key")
+        index = Qwen3Embedding(index_name, query_instruction)
     else:
         raise ValueError("Invalid index type")
     return index

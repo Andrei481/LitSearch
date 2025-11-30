@@ -22,6 +22,12 @@ def load_index(index_path: str) -> KVStore:
     elif index_type == "grit":
         from eval.retrieval.grit import GRIT
         index = GRIT(None, None).load(index_path)
+    elif index_type == "minilm":
+        from eval.retrieval.minilm import MiniLM
+        index = MiniLM(None).load(index_path)
+    elif index_type == "qwen3":  # <<< NEW
+        from eval.retrieval.qwen import Qwen3Embedding
+        index = Qwen3Embedding(None, query_instruction="").load(index_path)
     else:
         raise ValueError("Invalid index type")
     return index

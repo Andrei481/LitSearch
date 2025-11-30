@@ -9,30 +9,80 @@ from utils import utils
 from utils.openai_utils import OPENAIBaseEngine
 
 ###### QUERY CONSTRUCTION FUNCTIONS ######
+#def create_prompt_messages(item: dict, rank_start: int, rank_end: int, index_type: str) -> List[dict]:
+#    query = item['query']
+#    num_docs = len(item['documents'][rank_start:rank_end])
+#
+#    if index_type == "title_abstract":
+#        messages = [{'role': 'system', 'content': "You are RankGPT, an intelligent assistant that can rank papers based on their relevancy to a research query."},
+#                    {'role': 'user', 'content': f"I will provide you with the abstracts of {num_docs} papers, each indicated by number identifier []. \nRank the papers based on their relevance to research question: {query}."},
+#                    {'role': 'assistant', 'content': 'Okay, please provide the papers.'}]
+#        max_length = 300
+#    elif index_type == "full_paper":
+#        messages = [{'role': 'system', 'content': "You are RankGPT, an intelligent assistant that can rank papers based on their relevancy to a research query."},
+#                    {'role': 'user', 'content': f"I will provide you with {num_docs} papers, each indicated by number identifier []. \nRank the papers based on their relevance to research question: {query}."},
+#                    {'role': 'assistant', 'content': 'Okay, please provide the papers.'}]
+#        max_length = 10000
+#    else:
+#        raise ValueError(f"Invalid index type: {index_type}")
+#    
+#    for rank, document in enumerate(item['documents'][rank_start: rank_end]):
+#        content = document['content'].replace('Title: Content: ', '').strip()
+#        content = ' '.join(content.split()[:int(max_length)])
+#        messages.append({'role': 'user', 'content': f"[{rank+1}] {content}"})
+#        messages.append({'role': 'assistant', 'content': f'Received passage [{rank+1}].'})
+#    postfix_prompt = f"Search Query: {query}. \nRank the {num_docs} papers above based on their relevance to the research query. The papers should be listed in descending order using identifiers. The most relevant papers should be listed first. The output format should be [] > [], e.g., [1] > [2]. Only respond with the ranking results, do not say any words or explain."
+#    messages.append({'role': 'user', 'content': postfix_prompt})
+#    return messages
+
 def create_prompt_messages(item: dict, rank_start: int, rank_end: int, index_type: str) -> List[dict]:
-    query = item['query']
-    num_docs = len(item['documents'][rank_start:rank_end])
+    query = item["query"]
+    docs = item["documents"][rank_start:rank_end]
+    num_docs = len(docs)
 
     if index_type == "title_abstract":
-        messages = [{'role': 'system', 'content': "You are RankGPT, an intelligent assistant that can rank papers based on their relevancy to a research query."},
-                    {'role': 'user', 'content': f"I will provide you with the abstracts of {num_docs} papers, each indicated by number identifier []. \nRank the papers based on their relevance to research question: {query}."},
-                    {'role': 'assistant', 'content': 'Okay, please provide the papers.'}]
-        max_length = 300
+        max_words = 300 
     elif index_type == "full_paper":
-        messages = [{'role': 'system', 'content': "You are RankGPT, an intelligent assistant that can rank papers based on their relevancy to a research query."},
-                    {'role': 'user', 'content': f"I will provide you with {num_docs} papers, each indicated by number identifier []. \nRank the papers based on their relevance to research question: {query}."},
-                    {'role': 'assistant', 'content': 'Okay, please provide the papers.'}]
-        max_length = 10000
+        max_words = 10000
     else:
         raise ValueError(f"Invalid index type: {index_type}")
+
+    passages_str_list = []
     
-    for rank, document in enumerate(item['documents'][rank_start: rank_end]):
-        content = document['content'].replace('Title: Content: ', '').strip()
-        content = ' '.join(content.split()[:int(max_length)])
-        messages.append({'role': 'user', 'content': f"[{rank+1}] {content}"})
-        messages.append({'role': 'assistant', 'content': f'Received passage [{rank+1}].'})
-    postfix_prompt = f"Search Query: {query}. \nRank the {num_docs} papers above based on their relevance to the research query. The papers should be listed in descending order using identifiers. The most relevant papers should be listed first. The output format should be [] > [], e.g., [1] > [2]. Only respond with the ranking results, do not say any words or explain."
-    messages.append({'role': 'user', 'content': postfix_prompt})
+    # Start enumeration at 1 to match training logic [1], [2], etc.
+    for i, document in enumerate(docs, start=1):
+        raw_content = document["content"].strip()
+        
+        # --- FORMATTING CHECK ---
+        # Your training data used: f"Title: {title}\nAbstract: {abstract}"
+        # If raw_content comes from LitSearch 'title_abstract', it might look different.
+        # Ideally, ensure 'raw_content' matches the training format. 
+        # The line below assumes raw_content is just the text, so we truncate it first.
+        
+        content = " ".join(raw_content.split()[:max_words])
+        
+        # Construct the [i] block
+        passages_str_list.append(f"[{i}] {content}")
+
+    # MATCHING DISCREPANCY 1: Use the exact separator from training
+    passages_for_prompt = "\n\n---\n\n".join(passages_str_list)
+
+    # MATCHING DISCREPANCY 2 & 3: Use the exact text template from training
+    # Note: The training code puts the list count (from [1] to [N]) in the prompt.
+    user_message = (
+        f"You are an expert academic paper reranker. "
+        f"Your task is to re-order the given list of passages (from [1] to [{num_docs}]) "
+        f"based on their relevance to the query.\n\n"
+        f"Query: {query}\n\n"
+        f"Passages:\n{passages_for_prompt}\n\n"
+        f"Your ranking (most to least relevant):"
+    )
+
+    # We return a standard chat message list. 
+    # The LocalLLMEngine (vLLM/TGI) will apply the Gemma-3 chat template (<start_of_turn>user...)
+    messages = [
+        {"role": "user", "content": user_message},
+    ]
     return messages
 
 ###### RESPONSE PROCESSING FUNCTIONS ######
@@ -66,19 +116,19 @@ def receive_permutation(item, permutation, rank_start, rank_end):
             item['documents'][j + rank_start]['score'] = cut_range[j]['score']
     return item
 
-def permutation_pipeline(model: OPENAIBaseEngine, item: dict, rank_start: int, rank_end: int, index_type: str) -> dict:
+def permutation_pipeline(model, item: dict, rank_start: int, rank_end: int, index_type: str) -> dict:
     decrement_rate = (rank_end - rank_start) // 5
     min_count = (rank_end - rank_start) // 2
     
     while rank_end - rank_start >= min_count:
         try:
             messages = create_prompt_messages(item, rank_start, rank_end, index_type)
-            permutation = utils.prompt_gpt4_model(model, messages=messages)
+            permutation = model.generate(messages=messages)
             return receive_permutation(item, permutation, rank_start, rank_end)
-        except Exception as e: # the context window might be overflowing; reduce the number of documents and try again;
+        except Exception as e:
             rank_end -= decrement_rate
-            print(f"Error: context window overflow; reducing the number of documents to {rank_end - rank_start}")
-    print(f"Error: unable to rerank the documents. Returning the original order.")
+            print(f"Error: {str(e)}; reducing documents to {rank_end - rank_start}")
+    print(f"Error: unable to rerank the documents. Returning original order.")
     return item
             
 if __name__ == "__main__":
@@ -89,11 +139,22 @@ if __name__ == "__main__":
     parser.add_argument("--max_k", default=100, type=int, help="Max number of retrieved documents to rerank")
     parser.add_argument("--output_dir", type=str, required=False, default="results/reranking/")
     parser.add_argument("--dataset_path", required=False, default="princeton-nlp/LitSearch")
+    parser.add_argument("--use_local_llm", action="store_true", help="Use local LLM instead of GPT-4")
+    parser.add_argument("--local_llm_url", default="http://127.0.0.1:8080", help="Local LLM API URL")
     args = parser.parse_args()
+
+    if args.use_local_llm:
+        print("Using local LLM")
+        from utils.local_llm_utils import LocalLLMEngine
+        model_engine = LocalLLMEngine(api_url=args.local_llm_url)
+    
+        model = model_engine
+    else:
+        model = utils.get_gpt4_model(args.model, azure=True)
 
     corpus_data = datasets.load_dataset(args.dataset_path, "corpus_clean", split="full")
     retrieval_results = utils.read_json(args.retrieval_results_file)
-    model = utils.get_gpt4_model(args.model, azure=True)
+    # model = utils.get_gpt4_model(args.model, azure=True)
     
     os.makedirs(args.output_dir, exist_ok=True)
     output_file = os.path.join(args.output_dir, os.path.basename(args.retrieval_results_file).replace(".json", ".reranked.json"))
